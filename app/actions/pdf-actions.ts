@@ -220,7 +220,7 @@ export async function createJobAfterUpload({
       return { error: 'Failed to create parsing job' }
     }
 
-    const USE_QUEUE_THRESHOLD = 125 // Pages threshold for queue-based processing
+    const USE_QUEUE_THRESHOLD = 600 // Pages threshold for queue-based processing
 
     if (totalPages < USE_QUEUE_THRESHOLD) {
       // PHASE 1: Small PDF - Direct synchronous processing via parse-pdf function
