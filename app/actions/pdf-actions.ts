@@ -67,7 +67,7 @@ export async function uploadAndParsePdf(formData: FormData) {
       const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer))
       const totalPages = pdf.numPages
 
-      const USE_QUEUE_THRESHOLD = 125 // Pages threshold for queue-based processing
+      const USE_QUEUE_THRESHOLD = 600 // Pages threshold for queue-based processing
 
       if (totalPages < USE_QUEUE_THRESHOLD) {
         // PHASE 1: Small PDF - Direct synchronous processing via parse-pdf function
