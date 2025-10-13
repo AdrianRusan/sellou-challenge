@@ -94,3 +94,11 @@ enabled = true
 # Configure one of the supported request policies: `oneshot`, `per_worker`.
 # Use `oneshot` for hot reload, or `per_worker` for load testing.
 policy = "oneshot"
+
+# Function configuration for worker
+[functions.parse-pdf-worker]
+verify_jwt = false
+
+# Note: Cron jobs must be configured via Supabase Dashboard after deployment
+# Schedule: "* * * * *" (every minute)
+# Function: parse-pdf-worker

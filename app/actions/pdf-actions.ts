@@ -42,7 +42,7 @@ export async function uploadAndParsePdf(formData: FormData) {
       return { error: 'Failed to upload file' }
     }
 
-    // Create job record in database
+    // Create job record
     const { data: job, error: jobError } = await supabase
       .from('pdf_parsing_jobs')
       .insert({
@@ -56,32 +56,125 @@ export async function uploadAndParsePdf(formData: FormData) {
 
     if (jobError || !job) {
       console.error('Job creation error:', jobError)
-      // Clean up uploaded file
       await supabase.storage.from('pdf-uploads').remove([filePath])
       return { error: 'Failed to create parsing job' }
     }
 
-    // Trigger Edge Function asynchronously
-    const functionUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/parse-pdf`
+    // Extract PDF metadata to determine page count
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const { getDocumentProxy } = await import('unpdf')
+      const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer))
+      const totalPages = pdf.numPages
 
-    // Fire and forget - don't wait for response
-    fetch(functionUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-      },
-      body: JSON.stringify({ jobId: job.id }),
-    }).catch((error) => {
-      console.error('Failed to trigger parsing function:', error)
-    })
+      const USE_QUEUE_THRESHOLD = 125 // Pages threshold for queue-based processing
 
-    revalidatePath('/')
+      if (totalPages < USE_QUEUE_THRESHOLD) {
+        // PHASE 1: Small PDF - Direct synchronous processing via parse-pdf function
+        console.log(`Job ${job.id}: Small PDF (${totalPages} pages), using Phase 1 direct processing`)
 
-    return {
-      success: true,
-      jobId: job.id,
-      message: 'File uploaded successfully. Parsing started.'
+        await supabase
+          .from('pdf_parsing_jobs')
+          .update({
+            total_pages: totalPages,
+            status: 'pending',
+            processed_pages: 0
+          })
+          .eq('id', job.id)
+
+        // Trigger parse-pdf function (fire and forget)
+        const functionUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/parse-pdf`
+
+        fetch(functionUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+          body: JSON.stringify({ jobId: job.id }),
+        }).catch((error) => {
+          console.error('Failed to trigger parsing function:', error)
+        })
+
+        revalidatePath('/')
+
+        return {
+          success: true,
+          jobId: job.id,
+          message: `File uploaded. Processing ${totalPages} pages directly (fast mode).`
+        }
+
+      } else {
+        // PHASE 2: Large PDF - Queue-based processing via parse-pdf-worker
+        console.log(`Job ${job.id}: Large PDF (${totalPages} pages), using Phase 2 queue processing`)
+
+        await supabase
+          .from('pdf_parsing_jobs')
+          .update({
+            total_pages: totalPages,
+            status: 'queued',
+            processed_pages: 0
+          })
+          .eq('id', job.id)
+
+        // Create page tracking records
+        const pageRecords = Array.from({ length: totalPages }, (_, i) => ({
+          job_id: job.id,
+          page_number: i + 1,
+          status: 'pending'
+        }))
+
+        const { error: pagesError } = await supabase
+          .from('pdf_pages')
+          .insert(pageRecords)
+
+        if (pagesError) {
+          throw new Error(`Failed to create page records: ${pagesError.message}`)
+        }
+
+        // Queue individual page tasks
+        for (let page = 1; page <= totalPages; page++) {
+          await supabase.rpc('pgmq_send', {
+            p_queue_name: 'pdf_page_queue',
+            p_msg: {
+              job_id: job.id,
+              file_path: filePath,
+              page_number: page,
+              total_pages: totalPages
+            }
+          })
+        }
+
+        console.log(`Job ${job.id}: Queued ${totalPages} pages for worker processing`)
+
+        revalidatePath('/')
+
+        return {
+          success: true,
+          jobId: job.id,
+          message: `File uploaded. Processing ${totalPages} pages in background (queue mode).`
+        }
+      }
+
+    } catch (metadataError) {
+      console.error('Metadata extraction error:', metadataError)
+
+      // Fallback: Mark job as failed if we can't extract metadata
+      const errorMessage = metadataError instanceof Error
+        ? metadataError.message
+        : 'Unknown error occurred'
+
+      await supabase
+        .from('pdf_parsing_jobs')
+        .update({
+          status: 'failed',
+          error_message: `Failed to extract PDF metadata: ${errorMessage}`
+        })
+        .eq('id', job.id)
+
+      return {
+        error: 'Failed to process PDF metadata. The file may be corrupted.'
+      }
     }
 
   } catch (error) {

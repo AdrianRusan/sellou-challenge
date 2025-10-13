@@ -1,17 +1,30 @@
 # PDF Parser App
 
-A Next.js 15 application for parsing PDF files with real-time progress tracking using Supabase.
+A Next.js 15 application for parsing PDF files with real-time progress tracking using Supabase. Features an intelligent **hybrid processing architecture** that automatically optimizes for speed or reliability based on document size.
 
 ## Features
 
-- Upload PDF files up to 50MB
-- Real-time parsing progress tracking via Supabase Realtime
-- Extract text and metadata from PDFs
-- Beautiful, responsive UI with gradient designs
-- Download extracted text as TXT files
-- Handles large PDFs (tested with 300+ pages)
-- Automatic progress updates (every 10 pages)
-- Error handling and status notifications
+### Core Capabilities
+- 📤 Upload PDF files up to 50MB
+- ⚡ **Smart Processing**: Automatically chooses optimal method
+  - Fast Mode (< 125 pages): 30-60 second processing
+  - Queue Mode (≥ 125 pages): Distributed processing for unlimited scalability
+- 📊 Real-time parsing progress tracking via Supabase Realtime
+- 📝 Extract text and metadata from PDFs of any size
+- 💾 Download extracted text as TXT files
+- ✨ Beautiful, responsive UI with gradient designs
+- 🚀 Handles massive PDFs (tested with 600+ pages)
+- 🔄 Automatic progress updates with live UI feedback
+- 🛡️ Error handling and recovery (failed pages don't block completion)
+- ⚙️ Configurable processing threshold (default: 125 pages)
+
+### Architecture Highlights
+- **Hybrid Processing System**: Dual-mode architecture for optimal performance
+- **Queue-Based Processing**: PostgreSQL queue (pgmq) for large documents
+- **PDF Caching**: Worker caches PDFs in memory (3-4x speedup)
+- **Atomic Updates**: Database functions ensure data consistency
+- **Cron Worker**: 10-second interval for near-real-time processing
+- **Fault Tolerant**: Individual page failures don't crash the job
 
 ## Tech Stack
 
@@ -19,8 +32,9 @@ A Next.js 15 application for parsing PDF files with real-time progress tracking 
 - **React 19** with Client/Server Components
 - **TypeScript** for type safety
 - **Tailwind CSS** for styling
-- **Supabase** (Database, Storage, Realtime, Edge Functions)
-- **pdfjs-serverless** for PDF processing in Deno Edge Functions
+- **Supabase** (Database, Storage, Realtime, Edge Functions, Cron)
+- **npm:unpdf** (PDF.js v5.4.149) for PDF processing in Deno Edge Functions
+- **pgmq** (PostgreSQL Message Queue) for distributed task processing
 
 ## Prerequisites
 

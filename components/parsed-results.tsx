@@ -23,13 +23,36 @@ export default function ParsedResults({ jobId }: { jobId: string }) {
   }, [jobId])
 
   async function fetchJob() {
-    const { data } = await supabase
+    // Fetch job metadata
+    const { data: job } = await supabase
       .from('pdf_parsing_jobs')
       .select('*')
       .eq('id', jobId)
       .single()
 
-    if (data) setJob(data as Job)
+    if (job) {
+      // If job is completed, fetch and combine page texts
+      if (job.status === 'completed') {
+        const { data: pages } = await supabase
+          .from('pdf_pages')
+          .select('page_number, extracted_text')
+          .eq('job_id', jobId)
+          .eq('status', 'completed')
+          .order('page_number', { ascending: true })
+
+        // Combine page texts in order
+        if (pages && pages.length > 0) {
+          const fullText = pages
+            .map(p => p.extracted_text)
+            .filter(Boolean)
+            .join('\n\n')
+
+          job.extracted_text = fullText
+        }
+      }
+
+      setJob(job as Job)
+    }
   }
 
   if (!job) {
