@@ -1,8 +1,8 @@
 console.log('=== Edge Function Starting ===')
 console.log('Deno version:', Deno.version)
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
-import { resolvePDFJS } from 'https://esm.sh/pdfjs-serverless@0.4.2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
+import { getDocumentProxy } from 'npm:unpdf'
 
 console.log('Dependencies imported successfully')
 
@@ -138,15 +138,13 @@ Deno.serve(async (req) => {
 
     console.log(`[${jobId}] Buffer created, size: ${data.length} bytes`)
 
-    console.log(`[${jobId}] Step 5: Parsing PDF with pdfjs-serverless`)
+    console.log(`[${jobId}] Step 5: Parsing PDF with Mozilla PDF.js`)
 
-    // Parse PDF using pdfjs-serverless
-    const { getDocument } = await resolvePDFJS()
-    console.log(`[${jobId}] PDFJS resolved, loading document...`)
+    // Load PDF document
+    console.log(`[${jobId}] Loading PDF document...`)
+    const pdf = await getDocumentProxy(data)
 
-    const doc = await getDocument({ data, useSystemFonts: true }).promise
-    const totalPages = doc.numPages
-
+    const totalPages = pdf.numPages
     console.log(`[${jobId}] PDF loaded successfully! Total pages: ${totalPages}`)
 
     // Update progress
@@ -160,35 +158,68 @@ Deno.serve(async (req) => {
 
     // Extract text from all pages
     const allText = []
-    console.log(`[${jobId}] Processing ${totalPages} pages...`)
+    console.log(`[${jobId}] Extracting text from ${totalPages} pages...`)
 
-    for (let i = 1; i <= totalPages; i++) {
-      console.log(`[${jobId}] Processing page ${i}/${totalPages}`)
-      const page = await doc.getPage(i)
-      const textContent = await page.getTextContent()
-      const contents = textContent.items.map((item: any) => item.str).join(' ')
-      allText.push(contents)
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      try {
+        const page = await pdf.getPage(pageNum)
+        const textContent = await page.getTextContent()
 
-      // Update progress periodically (every 10 pages or at the end)
-      if (i % 10 === 0 || i === totalPages) {
-        await supabase
-          .from('pdf_parsing_jobs')
-          .update({ processed_pages: i })
-          .eq('id', jobId)
-        console.log(`[${jobId}] Progress updated: ${i}/${totalPages} pages`)
+        // Properly extract text with spacing and line breaks
+        let pageText = ''
+        let lastY = null
+
+        for (const item of textContent.items) {
+          // Check if item has str property (some items might not have text)
+          if (item.str && item.str.trim().length > 0) {
+            // Detect line breaks by checking vertical position
+            if (lastY !== null && item.transform && Math.abs(item.transform[5] - lastY) > 5) {
+              pageText += '\n'
+            }
+
+            // Add the text with a space
+            pageText += item.str + ' '
+
+            // Store Y position for next iteration
+            if (item.transform) {
+              lastY = item.transform[5]
+            }
+          }
+        }
+
+        const trimmedPageText = pageText.trim()
+        if (trimmedPageText.length > 0) {
+          allText.push(trimmedPageText)
+          console.log(`[${jobId}] Page ${pageNum}: ${trimmedPageText.length} characters`)
+        } else {
+          console.log(`[${jobId}] Page ${pageNum}: no extractable text`)
+        }
+
+        // Update progress every 10 pages or at the end
+        if (pageNum % 10 === 0 || pageNum === totalPages) {
+          await supabase
+            .from('pdf_parsing_jobs')
+            .update({ processed_pages: pageNum })
+            .eq('id', jobId)
+          console.log(`[${jobId}] Progress: ${pageNum}/${totalPages} pages`)
+        }
+
+      } catch (pageError) {
+        console.error(`[${jobId}] Error processing page ${pageNum}:`, pageError)
+        // Continue with next page
       }
     }
 
-    const extractedText = allText.join('\n')
+    const extractedText = allText.join('\n\n')
 
-    console.log(`[${jobId}] PDF parsed successfully!`)
-    console.log(`[${jobId}] Total pages: ${totalPages}`)
-    console.log(`[${jobId}] Extracted text length: ${extractedText.length} characters`)
+    console.log(`[${jobId}] Extraction complete!`)
+    console.log(`[${jobId}] Total text length: ${extractedText.length} characters`)
+    console.log(`[${jobId}] First 300 chars: ${extractedText.substring(0, 300)}`)
 
     // Create parsed content structure
     const parsedContent = {
       numPages: totalPages,
-      textPerPage: allText.length,
+      textLength: extractedText.length,
     }
 
     console.log(`[${jobId}] Step 6: Saving results to database`)
