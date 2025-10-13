@@ -1,10 +1,13 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { uploadAndParsePdf } from '@/app/actions/pdf-actions'
+import { createJobAfterUpload } from '@/app/actions/pdf-actions'
+import { createClient } from '@/lib/supabase/client'
 
 export default function PdfUpload({ onUploadSuccess }: { onUploadSuccess: (jobId: string) => void }) {
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadStatus, setUploadStatus] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -14,6 +17,8 @@ export default function PdfUpload({ onUploadSuccess }: { onUploadSuccess: (jobId
     if (file) {
       setSelectedFile(file)
       setError(null)
+      setUploadProgress(0)
+      setUploadStatus('')
     }
   }
 
@@ -25,30 +30,111 @@ export default function PdfUpload({ onUploadSuccess }: { onUploadSuccess: (jobId
       return
     }
 
+    // Validate file type
+    if (selectedFile.type !== 'application/pdf') {
+      setError('File must be a PDF')
+      return
+    }
+
+    // Validate file size (max 50MB)
+    const maxSize = 50 * 1024 * 1024 // 50MB
+    if (selectedFile.size > maxSize) {
+      setError('File size must be less than 50MB')
+      return
+    }
+
     setUploading(true)
     setError(null)
+    setUploadProgress(0)
+    setUploadStatus('Preparing...')
+
+    let uploadedFilePath: string | null = null
 
     try {
-      const formData = new FormData()
-      formData.append('file', selectedFile)
+      // Step 1: Extract PDF metadata (page count)
+      setUploadStatus('Reading PDF...')
+      const arrayBuffer = await selectedFile.arrayBuffer()
+      const { getDocumentProxy } = await import('unpdf')
+      const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer))
+      const totalPages = pdf.numPages
 
-      const result = await uploadAndParsePdf(formData)
+      if (!totalPages || totalPages <= 0) {
+        throw new Error('Invalid PDF: Could not determine page count')
+      }
+
+      // Step 2: Generate unique file path
+      const timestamp = Date.now()
+      const fileName = selectedFile.name.replace(/[^a-zA-Z0-9.-]/g, '_')
+      const filePath = `${timestamp}-${fileName}`
+      uploadedFilePath = filePath
+
+      // Step 3: Upload file directly to Supabase Storage
+      setUploadStatus('Uploading to storage...')
+      setUploadProgress(10)
+
+      const supabase = createClient()
+      const { error: uploadError } = await supabase.storage
+        .from('pdf-uploads')
+        .upload(filePath, selectedFile, {
+          contentType: 'application/pdf',
+          upsert: false,
+        })
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError)
+        throw new Error('Failed to upload file to storage')
+      }
+
+      setUploadProgress(60)
+      setUploadStatus('Creating job...')
+
+      // Step 4: Create job record with metadata
+      const result = await createJobAfterUpload({
+        fileName: selectedFile.name,
+        filePath: filePath,
+        fileSize: selectedFile.size,
+        totalPages: totalPages,
+      })
 
       if (result.error) {
-        setError(result.error)
-      } else if (result.success && result.jobId) {
+        // Rollback: Delete uploaded file if job creation fails
+        await supabase.storage.from('pdf-uploads').remove([filePath])
+        throw new Error(result.error)
+      }
+
+      if (result.success && result.jobId) {
+        setUploadProgress(100)
+        setUploadStatus('Complete!')
+
         // Reset form
         setSelectedFile(null)
         if (fileInputRef.current) {
           fileInputRef.current.value = ''
         }
+
+        // Notify parent component
         onUploadSuccess(result.jobId)
       }
     } catch (err) {
-      setError('An unexpected error occurred')
+      const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred'
+      setError(errorMessage)
       console.error('Upload error:', err)
+
+      // Attempt cleanup if upload succeeded but something else failed
+      if (uploadedFilePath) {
+        try {
+          const supabase = createClient()
+          await supabase.storage.from('pdf-uploads').remove([uploadedFilePath])
+        } catch (cleanupError) {
+          console.error('Cleanup error:', cleanupError)
+        }
+      }
     } finally {
       setUploading(false)
+      if (error) {
+        setUploadProgress(0)
+        setUploadStatus('')
+      }
     }
   }
 
@@ -99,6 +185,21 @@ export default function PdfUpload({ onUploadSuccess }: { onUploadSuccess: (jobId
           </div>
         )}
 
+        {uploading && uploadProgress > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
+              <span>{uploadStatus}</span>
+              <span>{uploadProgress}%</span>
+            </div>
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+              <div
+                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
+
         <button
           type="submit"
           disabled={uploading || !selectedFile}
@@ -114,7 +215,7 @@ export default function PdfUpload({ onUploadSuccess }: { onUploadSuccess: (jobId
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              Uploading...
+              {uploadStatus || 'Uploading...'}
             </span>
           ) : (
             'Upload and Parse PDF'
