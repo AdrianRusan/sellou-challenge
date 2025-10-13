@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "supabase": "https://esm.sh/@supabase/supabase-js@2.45.4",
+    "pdfjs-serverless": "https://esm.sh/pdfjs-serverless@0.4.2"
+  }
+}
